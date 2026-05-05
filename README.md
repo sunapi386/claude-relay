@@ -110,6 +110,19 @@ scp ~/.claude/.credentials.json root@<relay-ip>:/root/.claude/.credentials.json
 ssh root@<relay-ip> 'chmod 600 /root/.claude/.credentials.json'
 ```
 
+Clear hooks from the copied settings (they reference scripts that don't exist on the relay):
+
+```bash
+ssh root@<relay-ip> 'python3 -c "
+import json
+with open(\"/root/.claude/settings.json\") as f:
+    d = json.load(f)
+d[\"hooks\"] = {}
+with open(\"/root/.claude/settings.json\", \"w\") as f:
+    json.dump(d, f, indent=2)
+"'
+```
+
 Verify:
 
 ```bash
@@ -138,6 +151,7 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 ExecStart=/opt/relay-venv/bin/python /opt/claude-relay.py --port 5005 --host 0.0.0.0
 Restart=on-failure
 RestartSec=5
@@ -214,15 +228,37 @@ Then restart the gateway:
 systemctl --user restart openclaw-gateway
 ```
 
+## Model ID mapping
+
+The relay maps OpenAI-style model IDs to Claude CLI model IDs automatically:
+
+| Request model ID | CLI model ID |
+|---|---|
+| `claude-opus-4-20250918` | `claude-opus-4-6` |
+| `claude-sonnet-4-20250514` | `claude-sonnet-4-6` |
+
+Any unrecognized model ID is passed through as-is.
+
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDE_BIN` | `claude` (from PATH) | Path to the Claude CLI binary |
 
+## Refreshing OAuth credentials
+
+OAuth tokens expire periodically. When you see 401 errors, re-copy from the host machine:
+
+```bash
+scp ~/.claude/.credentials.json root@<relay-ip>:/root/.claude/.credentials.json
+```
+
+No service restart needed — the next CLI invocation picks up the new token.
+
 ## Limitations
 
 - Each request spawns a new `claude` CLI process (no connection pooling)
 - No tool_use passthrough — the relay converts to text-only responses
-- OAuth tokens expire; re-copy credentials when you get 401s
+- OAuth tokens expire periodically; re-copy credentials when you get 401s
 - Single-tenant by design — one CLI auth, one user
+- Systemd service needs `Environment=HOME=/root` to find CLI config

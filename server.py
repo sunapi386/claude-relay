@@ -23,12 +23,23 @@ app = Flask(__name__)
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", shutil.which("claude") or "claude")
 DEFAULT_TIMEOUT = 300
 
+# Map OpenAI-style model IDs to Claude CLI model IDs
+MODEL_MAP = {
+    "claude-opus-4-20250918": "claude-opus-4-6",
+    "claude-sonnet-4-20250514": "claude-sonnet-4-6",
+}
+
+
+def _resolve_model(model):
+    """Map incoming model ID to a Claude CLI model ID."""
+    return MODEL_MAP.get(model, model)
+
 
 def _run_claude(prompt, model=None, system_prompt=None):
     """Run claude CLI and return the parsed JSON output."""
     cmd = [CLAUDE_BIN, "-p", "--output-format", "json"]
     if model:
-        cmd += ["--model", model]
+        cmd += ["--model", _resolve_model(model)]
     if system_prompt:
         cmd += ["--system-prompt", system_prompt]
 
@@ -41,7 +52,17 @@ def _run_claude(prompt, model=None, system_prompt=None):
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"claude CLI failed: {result.stderr.strip()}")
+        # CLI may still produce valid JSON on non-zero exit (e.g. hook failures)
+        try:
+            parsed = json.loads(result.stdout)
+            if not parsed.get("is_error", True):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        raise RuntimeError(
+            f"claude CLI failed (rc={result.returncode}): "
+            f"stderr={result.stderr.strip()!r} stdout={result.stdout[:500]!r}"
+        )
 
     return json.loads(result.stdout)
 
@@ -50,7 +71,7 @@ def _run_claude_stream(prompt, model=None, system_prompt=None):
     """Run claude CLI in streaming mode, yielding text chunks."""
     cmd = [CLAUDE_BIN, "-p", "--output-format", "stream-json", "--verbose"]
     if model:
-        cmd += ["--model", model]
+        cmd += ["--model", _resolve_model(model)]
     if system_prompt:
         cmd += ["--system-prompt", system_prompt]
 
