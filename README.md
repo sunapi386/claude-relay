@@ -142,14 +142,14 @@ For running in an isolated container, see the detailed guide below.
 ### Architecture
 
 ```
-MacBook (browser)
-  → SSH tunnel (-L 18789:192.168.2.31:18789)
-    → OpenClaw LXC (192.168.2.31:18789)  — CT 305, "openclaw-instance"
-      → Claude Relay LXC (192.168.2.33:5005)  — CT 306, "claude-relay"
+Client (laptop/browser)
+  → SSH tunnel (-L <port>:<relay-ip>:<port>)
+    → Consumer LXC (e.g. OpenClaw)
+      → Claude Relay LXC (:5005)
         → Claude CLI → Anthropic API
 ```
 
-Both LXCs are cloned from a hardened Ubuntu 24.04 template (CT 304) with:
+Both LXCs are cloned from a hardened Ubuntu 24.04 template with:
 - Unprivileged container with nesting
 - SSH key-only auth, root password disabled
 - Postfix disabled, unnecessary SUID bits removed
@@ -157,20 +157,20 @@ Both LXCs are cloned from a hardened Ubuntu 24.04 template (CT 304) with:
 
 ### Step 1: Create the LXC
 
-Clone from the base template:
+Clone from your base template:
 
 ```bash
 # On Proxmox host
-pct clone 304 306 --hostname claude-relay --full
-pct start 306
+pct clone <template-id> <new-id> --hostname claude-relay --full
+pct start <new-id>
 ```
 
 ### Step 2: Set up SSH access
 
 ```bash
-pct exec 306 -- bash -c '
+pct exec <new-id> -- bash -c '
   mkdir -p /root/.ssh
-  echo "ssh-ed25519 AAAA... user@host" >> /root/.ssh/authorized_keys
+  echo "your-ssh-public-key" >> /root/.ssh/authorized_keys
   chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
 '
 ```
@@ -211,23 +211,22 @@ ssh root@<relay-ip> 'claude -p --output-format json "Say hi"'
 ### Step 5: Firewall rules (Proxmox)
 
 ```bash
-# On relay LXC (306): allow inbound from OpenClaw
-pvesh create /nodes/pve/lxc/306/firewall/rules \
+# On relay LXC: allow inbound from consumer
+pvesh create /nodes/pve/lxc/<relay-id>/firewall/rules \
   --type in --action ACCEPT --dport 5005 --proto tcp \
-  --source 192.168.2.31 --enable 1 \
-  --comment "Allow OpenClaw to relay"
+  --source <consumer-ip> --enable 1 \
+  --comment "Allow consumer to relay"
 
-# On OpenClaw LXC (305): allow outbound to relay (before LAN DROP rule)
-pvesh create /nodes/pve/lxc/305/firewall/rules \
-  --type out --action ACCEPT --dest 192.168.2.33 --proto tcp \
+# On consumer LXC: allow outbound to relay (before any DROP rule)
+pvesh create /nodes/pve/lxc/<consumer-id>/firewall/rules \
+  --type out --action ACCEPT --dest <relay-ip> --proto tcp \
   --dport 5005 --enable 1 \
-  --comment "Allow relay on claude-relay LXC" \
-  --pos 2
+  --comment "Allow outbound to claude-relay"
 ```
 
 ### Step 6: Configure OpenClaw
 
-In the OpenClaw LXC, update `~/.openclaw/openclaw.json`:
+In the consumer LXC, update `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -235,7 +234,7 @@ In the OpenClaw LXC, update `~/.openclaw/openclaw.json`:
     "mode": "merge",
     "providers": {
       "claude-relay": {
-        "baseUrl": "http://192.168.2.33:5005/v1",
+        "baseUrl": "http://<relay-ip>:5005/v1",
         "apiKey": "none",
         "api": "openai-completions",
         "models": [
